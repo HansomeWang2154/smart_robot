@@ -3,6 +3,8 @@
 This project demonstrates a fully classical manipulation stack for a Franka
 Emika Panda:
 
+- randomized cup poses observed through a fixed overhead RGB-D camera;
+- classical color segmentation and calibrated depth back-projection;
 - damped-least-squares inverse kinematics;
 - joint-space RRT-Connect with MuJoCo collision checking;
 - time-scaled joint trajectories;
@@ -32,6 +34,8 @@ MJCF. Running it again is safe.
 
 Artifacts are written to `outputs/`:
 
+- `camera_rgb.png`: raw perception-camera observation;
+- `camera_detection.png`: detected cup pixels and estimated image center;
 - `pick_place.mp4`: overview video;
 - `trajectory.png`: tracking and task-space plots;
 - `metrics.json`: success, collision, tracking, and planner statistics;
@@ -39,16 +43,17 @@ Artifacts are written to `outputs/`:
 
 ## Verified baseline
 
-Four independent RRT seeds (`0, 1, 2, 7`) were evaluated in the supplied
-scene. All four completed the task. The final seed-7 artifact reports:
+Four independently randomized cup poses and RRT seeds (`0, 1, 2, 7`) were
+evaluated in the supplied scene. All four completed the task using only the
+RGB-D position estimate for grasp planning. Simulator ground truth is retained
+only to report perception error. The final seed-7 artifact reports:
 
 | Metric | Result |
 |---|---:|
-| placement XY error | 5.18 mm |
+| RGB-D cup-position error | 7.14 mm |
+| placement XY error | 16.29 mm |
 | physical forbidden contacts | 0 |
-| minimum robot-obstacle signed distance | 14.73 mm |
-| joint tracking RMSE | 0.0242 rad |
-| simulated task duration | 28.46 s |
+| simulated task duration | 35.37 s |
 
 `safety_margin_contact_count` is intentionally reported separately: it counts
 MuJoCo contacts generated inside the positive 15 mm planning margin, before
@@ -83,4 +88,14 @@ stable force-closure grasp during aggressive RRT motions; it is switched off
 immediately before opening. This deliberately isolates motion-planning and
 tracking quality from gripper-contact tuning. A pure-contact grasp can be
 tested by removing the two `set_grasp_constraint` calls in `run_demo.py`.
+
+## Perception boundary
+
+The current detector is a transparent classical baseline for the synthetic
+blue cup: it segments blue pixels, selects the largest connected component,
+uses the component bounding-box center, and combines it with the depth image
+and calibrated MuJoCo camera pose to recover a world-frame 3-D position. It is
+not yet a category-level cup detector. The `RgbdCupDetector` interface is the
+intended replacement point for YOLO-World/Grounding DINO plus depth, while the
+planner and controller can remain unchanged.
 
