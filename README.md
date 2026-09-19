@@ -3,7 +3,7 @@
 This project demonstrates a fully classical manipulation stack for a Franka
 Emika Panda:
 
-- randomized cup poses observed through a fixed overhead RGB-D camera;
+- randomized cup poses observed through fixed and eye-in-hand RGB-D cameras;
 - classical color segmentation and calibrated depth back-projection;
 - damped-least-squares inverse kinematics;
 - joint-space RRT-Connect with MuJoCo collision checking;
@@ -29,13 +29,15 @@ python scripts/run_demo.py --render --seed 7
 ```
 
 `setup_assets.py` performs a shallow sparse checkout containing only the Panda
-model, then installs this project's `assets/pick_place.xml` beside the upstream
-MJCF. Running it again is safe.
+model, injects the `wrist_rgbd` camera into the Panda hand, then installs this
+project's `assets/pick_place.xml` beside the upstream MJCF. Running it again is
+safe.
 
 Artifacts are written to `outputs/`:
 
-- `camera_rgb.png`: raw perception-camera observation;
-- `camera_detection.png`: detected cup pixels and estimated image center;
+- `fixed_camera_rgb.png` / `fixed_camera_detection.png`: coarse observation;
+- `wrist_camera_rgb.png` / `wrist_camera_detection.png`: eye-in-hand refinement;
+- `perception.json`: coarse/refined estimates and evaluation-only ground truth;
 - `pick_place.mp4`: overview video;
 - `trajectory.png`: tracking and task-space plots;
 - `metrics.json`: success, collision, tracking, and planner statistics;
@@ -43,17 +45,20 @@ Artifacts are written to `outputs/`:
 
 ## Verified baseline
 
-Four independently randomized cup poses and RRT seeds (`0, 1, 2, 7`) were
-evaluated in the supplied scene. All four completed the task using only the
-RGB-D position estimate for grasp planning. Simulator ground truth is retained
-only to report perception error. The final seed-7 artifact reports:
+Four independently randomized reachable cup poses and RRT seeds (`0, 1, 2, 7`)
+were evaluated in the supplied scene. All four completed the task using the
+eye-in-hand-refined position for grasp planning. Simulator ground truth is
+retained only to report perception error. The final seed-7 artifact reports:
 
 | Metric | Result |
 |---|---:|
-| RGB-D cup-position error | 7.14 mm |
-| placement XY error | 16.29 mm |
+| fixed-camera cup-position error | 11.26 mm |
+| wrist-camera cup-position error | 4.26 mm |
+| bilateral fingertip contact before lock | true / true |
+| object displacement when lock is enabled | 0.11 µm |
+| placement XY error | 12.89 mm |
 | physical forbidden contacts | 0 |
-| simulated task duration | 35.37 s |
+| joint tracking RMSE | 0.0228 rad |
 
 `safety_margin_contact_count` is intentionally reported separately: it counts
 MuJoCo contacts generated inside the positive 15 mm planning margin, before
@@ -82,20 +87,22 @@ where `M` is the joint-space inertia matrix and `h` is MuJoCo's bias force
 (gravity plus Coriolis/centrifugal terms). Joint torques are clipped to the
 Panda limits.
 
-The fingers first close through the original Panda contact model. Once closure
-has completed, a disabled-by-default site weld is switched on to represent a
-stable force-closure grasp during aggressive RRT motions; it is switched off
-immediately before opening. This deliberately isolates motion-planning and
-tracking quality from gripper-contact tuning. A pure-contact grasp can be
-tested by removing the two `set_grasp_constraint` calls in `run_demo.py`.
+The fingers first close through the original Panda contact model. A grasp is
+accepted only when both fingertip groups contact the cup. The cup-side weld
+site is then re-expressed at the current hand pose, so enabling the constraint
+does not move the physical cup. The constraint starts soft and ramps to its
+tracking stiffness over 0.30 s. This retains a stable grasp during aggressive
+RRT motions without the previous snap-to-site artifact. A pure-contact grasp
+can still be tested by omitting the stabilization call.
 
 ## Perception boundary
 
-The current detector is a transparent classical baseline for the synthetic
-blue cup: it segments blue pixels, selects the largest connected component,
-uses the component bounding-box center, and combines it with the depth image
-and calibrated MuJoCo camera pose to recover a world-frame 3-D position. It is
-not yet a category-level cup detector. The `RgbdCupDetector` interface is the
-intended replacement point for YOLO-World/Grounding DINO plus depth, while the
-planner and controller can remain unchanged.
+The fixed camera supplies a coarse position used to reach an observation pose.
+The hand-mounted camera then observes the cup again and its estimate is used to
+recompute IK and collision-free plans online. Both currently use a transparent
+classical detector for the synthetic blue cup: color segmentation, connected
+components, metric depth, and calibrated camera extrinsics. This is not yet a
+category-level cup detector. `RgbdCupDetector` is the replacement point for
+YOLO-World/Grounding DINO plus depth, while the planner and controller remain
+unchanged.
 
