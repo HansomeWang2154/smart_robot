@@ -45,6 +45,12 @@ class PandaPickPlace:
         self.grasp_equality = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_EQUALITY, "grasp_weld"
         )
+        self.grasp_site = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_SITE, "grasp_site"
+        )
+        self.object_site = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_SITE, "object_site"
+        )
         self.robot_bodies = {
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
             for name in ROBOT_BODY_NAMES
@@ -57,15 +63,103 @@ class PandaPickPlace:
             geom for geom in range(self.model.ngeom)
             if int(self.model.geom_bodyid[geom]) == self.object_body
         }
+        self.left_finger_body = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "left_finger"
+        )
+        self.right_finger_body = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "right_finger"
+        )
+        self.finger_qpos = np.array([
+            self.model.jnt_qposadr[
+                mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "finger_joint1")
+            ],
+            self.model.jnt_qposadr[
+                mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "finger_joint2")
+            ],
+        ])
+        self.left_finger_geoms = {
+            geom for geom in range(self.model.ngeom)
+            if int(self.model.geom_bodyid[geom]) == self.left_finger_body
+        }
+        self.right_finger_geoms = {
+            geom for geom in range(self.model.ngeom)
+            if int(self.model.geom_bodyid[geom]) == self.right_finger_body
+        }
         self.table_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "table_top")
         self.stats = CollisionStats()
+        self.grasp_ramp_step = 0
+        self.grasp_ramp_steps = max(1, int(round(0.30 / self.dt)))
+        self.grasp_soft_timeconst = 0.08
+        self.grasp_stiff_timeconst = 0.015
+        self.grasp_alignment_error = np.inf
         self._configure_torque_actuators()
         self.reset()
 
-    def set_grasp_constraint(self, active: bool) -> None:
-        """Enable the post-closure rigid-grasp approximation."""
-        self.data.eq_active[self.grasp_equality] = bool(active)
+    def grasp_contact_state(self) -> tuple[bool, bool]:
+        """Return whether the physical cup touches each fingertip group."""
+        left = False
+        right = False
+        for contact in self.data.contact[: self.data.ncon]:
+            pair = {int(contact.geom1), int(contact.geom2)}
+            if pair & self.object_geoms:
+                left |= bool(pair & self.left_finger_geoms)
+                right |= bool(pair & self.right_finger_geoms)
+        return left, right
+
+    def _align_object_site_to_grasp(self) -> float:
+        """Move the cup's weld site so activation starts with zero residual."""
         mujoco.mj_forward(self.model, self.data)
+        grasp_position = self.data.site_xpos[self.grasp_site].copy()
+        grasp_rotation = self.data.site_xmat[self.grasp_site].reshape(3, 3).copy()
+        object_position = self.data.xpos[self.object_body].copy()
+        object_rotation = self.data.xmat[self.object_body].reshape(3, 3).copy()
+        before = float(
+            np.linalg.norm(self.data.site_xpos[self.grasp_site] - self.data.site_xpos[self.object_site])
+        )
+        self.model.site_pos[self.object_site] = object_rotation.T @ (
+            grasp_position - object_position
+        )
+        local_rotation = object_rotation.T @ grasp_rotation
+        local_quaternion = np.empty(4)
+        mujoco.mju_mat2Quat(local_quaternion, local_rotation.ravel())
+        self.model.site_quat[self.object_site] = local_quaternion
+        mujoco.mj_forward(self.model, self.data)
+        return before
+
+    def set_grasp_constraint(self, active: bool, *, require_bilateral_contact: bool = True) -> None:
+        """Enable a contact-gated, zero-residual, gradually stiffened weld."""
+        if active:
+            left, right = self.grasp_contact_state()
+            if require_bilateral_contact and not (left and right):
+                site_error_vector = (
+                    self.data.site_xpos[self.grasp_site]
+                    - self.data.site_xpos[self.object_site]
+                )
+                site_error = float(np.linalg.norm(site_error_vector))
+                raise RuntimeError(
+                    "Grasp rejected: bilateral contact required "
+                    f"(left={left}, right={right}, "
+                    f"finger_qpos={self.data.qpos[self.finger_qpos].tolist()}, "
+                    f"site_error_vector_m={site_error_vector.tolist()}, "
+                    f"site_error_m={site_error:.6f})"
+                )
+            self.grasp_alignment_error = self._align_object_site_to_grasp()
+            self.model.eq_solref[self.grasp_equality, 0] = self.grasp_soft_timeconst
+            self.grasp_ramp_step = 0
+        self.data.eq_active[self.grasp_equality] = bool(active)
+        if not active:
+            self.grasp_ramp_step = 0
+        mujoco.mj_forward(self.model, self.data)
+
+    def _update_grasp_softness(self) -> None:
+        if not bool(self.data.eq_active[self.grasp_equality]):
+            return
+        alpha = min(1.0, self.grasp_ramp_step / self.grasp_ramp_steps)
+        self.model.eq_solref[self.grasp_equality, 0] = (
+            (1.0 - alpha) * self.grasp_soft_timeconst
+            + alpha * self.grasp_stiff_timeconst
+        )
+        self.grasp_ramp_step += 1
 
     def _configure_torque_actuators(self) -> None:
         # The Menagerie model uses general position servos. Setting unit gain and
@@ -97,7 +191,10 @@ class PandaPickPlace:
         """Randomize the cup on the reachable pick side of the table."""
         rng = np.random.default_rng(seed)
         self.data.qpos[self.object_qpos_adr] = rng.uniform(0.43, 0.63)
-        self.data.qpos[self.object_qpos_adr + 1] = rng.uniform(-0.31, -0.17)
+        # Keep the cup in the physically graspable half of the pick region.
+        # Positions closer than roughly 0.23 m to the centerline leave too
+        # little room between the Panda hand and the central barrier.
+        self.data.qpos[self.object_qpos_adr + 1] = rng.uniform(-0.32, -0.24)
         self.data.qvel[:] = 0.0
         mujoco.mj_forward(self.model, self.data)
         return self.object_position()
@@ -193,6 +290,7 @@ class PandaPickPlace:
         return np.clip(tau, -self.torque_limits, self.torque_limits)
 
     def step(self, q_ref: np.ndarray, dq_ref: np.ndarray, gripper_open: bool) -> None:
+        self._update_grasp_softness()
         self.data.ctrl[:7] = self.computed_torque(q_ref, dq_ref)
         self.data.ctrl[7] = 255.0 if gripper_open else 0.0
         mujoco.mj_step(self.model, self.data)
