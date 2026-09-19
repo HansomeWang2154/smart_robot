@@ -57,7 +57,7 @@ class PandaKinematics:
         *,
         max_iterations: int = 500,
         damping: float = 0.035,
-        position_tolerance: float = 1.5e-3,
+        position_tolerance: float = 2.5e-3,
         orientation_tolerance: float = 1.5e-2,
     ) -> IKResult:
         data = mujoco.MjData(self.model)
@@ -97,5 +97,4 @@ class PandaKinematics:
         ep = float(np.linalg.norm(np.asarray(target_position) - position))
         er = float(np.linalg.norm(self.orientation_error(rotation, np.asarray(target_rotation))))
         return IKResult(q.copy(), ep, er, max_iterations, False)
-
 
