@@ -57,7 +57,7 @@ class PandaKinematics:
         *,
         max_iterations: int = 500,
         damping: float = 0.035,
-        position_tolerance: float = 2.5e-3,
+        position_tolerance: float = 3.0e-3,
         orientation_tolerance: float = 1.5e-2,
     ) -> IKResult:
         data = mujoco.MjData(self.model)
