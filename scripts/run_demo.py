@@ -234,14 +234,6 @@ def main() -> int:
             sim.data.qpos[sim.arm_qpos].copy(),
             ik["refined_pregrasp"],
         )
-        transfer_planner = RRTConnect(
-            sim.kin.lower + 0.02,
-            sim.kin.upper - 0.02,
-            sim.collision_checker(payload=True),
-            seed=args.seed + 2,
-            max_iterations=6000,
-        )
-        plans["lift_to_preplace"] = transfer_planner.plan(ik["lift"], ik["preplace"])
         return_planner = RRTConnect(
             sim.kin.lower + 0.02,
             sim.kin.upper - 0.02,
@@ -284,6 +276,24 @@ def main() -> int:
             gripper_open=False,
             allow_object_contact=True,
         )
+        # The physical grasp can be slightly off-centre. Plan only after the
+        # lift so every RRT state carries the full cup at its measured pose.
+        transfer_planner = RRTConnect(
+            sim.kin.lower + 0.02,
+            sim.kin.upper - 0.02,
+            sim.collision_checker(
+                payload=True,
+                payload_obstacle_clearance=0.025,
+                payload_table_clearance=0.010,
+            ),
+            seed=args.seed + 2,
+            max_iterations=10000,
+        )
+        plans["lift_to_preplace"] = transfer_planner.plan(
+            sim.data.qpos[sim.arm_qpos].copy(), ik["preplace"]
+        )
+        if not plans["lift_to_preplace"].success:
+            raise RuntimeError("RRT-Connect failed for lift_to_preplace")
         execute_phase(
             "transfer",
             plans["lift_to_preplace"].path,
@@ -331,6 +341,7 @@ def main() -> int:
         xy_error < 0.065
         and final_object[2] > 0.37
         and sim.stats.forbidden_contacts == 0
+        and sim.stats.payload_obstacle_collision_steps == 0
         and all(grasp_contacts_at_lock)
     )
 
@@ -356,6 +367,15 @@ def main() -> int:
         "forbidden_contact_count": sim.stats.forbidden_contacts,
         "safety_margin_contact_count": sim.stats.safety_margin_contacts,
         "forbidden_contact_pairs": sorted([list(pair) for pair in sim.stats.contact_pairs]),
+        "payload_obstacle_collision_steps": sim.stats.payload_obstacle_collision_steps,
+        "payload_obstacle_contact_pairs": sorted(
+            [list(pair) for pair in sim.stats.payload_contact_pairs]
+        ),
+        "minimum_payload_obstacle_signed_distance_m": (
+            float(sim.stats.minimum_payload_obstacle_signed_distance)
+            if np.isfinite(sim.stats.minimum_payload_obstacle_signed_distance)
+            else None
+        ),
         "minimum_robot_obstacle_signed_distance_m": (
             float(sim.stats.minimum_robot_obstacle_signed_distance)
             if np.isfinite(sim.stats.minimum_robot_obstacle_signed_distance)
