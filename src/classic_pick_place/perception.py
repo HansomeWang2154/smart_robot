@@ -88,6 +88,7 @@ class RgbdCupDetector:
         data: mujoco.MjData,
         *,
         output_dir: Path | None = None,
+        artifact_prefix: str = "camera",
     ) -> CupDetection:
         rgb, depth = self.capture(data)
         mask = self._largest_blue_component(rgb)
@@ -112,12 +113,15 @@ class RgbdCupDetector:
 
         if output_dir is not None:
             output_dir.mkdir(parents=True, exist_ok=True)
-            imageio.imwrite(output_dir / "camera_rgb.png", rgb)
+            imageio.imwrite(output_dir / f"{artifact_prefix}_rgb.png", rgb)
             overlay = rgb.astype(np.float32)
             overlay[mask] = 0.55 * overlay[mask] + 0.45 * np.array([255.0, 230.0, 0.0])
             ui, vi = int(round(u)), int(round(v))
             overlay[max(0, vi - 8): vi + 9, max(0, ui - 1): ui + 2] = [255, 30, 30]
             overlay[max(0, vi - 1): vi + 2, max(0, ui - 8): ui + 9] = [255, 30, 30]
-            imageio.imwrite(output_dir / "camera_detection.png", np.clip(overlay, 0, 255).astype(np.uint8))
+            imageio.imwrite(
+                output_dir / f"{artifact_prefix}_detection.png",
+                np.clip(overlay, 0, 255).astype(np.uint8),
+            )
         return detection
 
