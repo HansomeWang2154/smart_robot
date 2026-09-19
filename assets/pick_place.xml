@@ -1,0 +1,67 @@
+<mujoco model="panda collision-free pick and place">
+  <include file="panda.xml"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast">
+    <flag contact="enable"/>
+  </option>
+
+  <statistic center="0.48 0 0.42" extent="1.15"/>
+
+  <visual>
+    <headlight diffuse="0.55 0.55 0.55" ambient="0.32 0.32 0.32" specular="0.1 0.1 0.1"/>
+    <rgba haze="0.15 0.20 0.28 1"/>
+    <global azimuth="135" elevation="-25" offwidth="1280" offheight="720"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.18 0.25 0.35" rgb2="0.02 0.03 0.05"
+             width="512" height="3072"/>
+    <texture type="2d" name="floor_tex" builtin="checker" mark="edge"
+             rgb1="0.15 0.17 0.20" rgb2="0.09 0.10 0.12" markrgb="0.35 0.35 0.35"
+             width="300" height="300"/>
+    <material name="floor_mat" texture="floor_tex" texuniform="true" texrepeat="4 4" reflectance="0.08"/>
+    <material name="table_mat" rgba="0.42 0.28 0.16 1" roughness="0.8"/>
+    <material name="obstacle_mat" rgba="0.82 0.20 0.16 1" roughness="0.5"/>
+    <material name="cube_mat" rgba="0.10 0.48 0.95 1" roughness="0.35"/>
+    <material name="goal_mat" rgba="0.10 0.90 0.35 0.35"/>
+  </asset>
+
+  <worldbody>
+    <light name="key" pos="0.1 -0.4 1.6" dir="0.3 0.15 -1" directional="true" castshadow="true"/>
+    <light name="fill" pos="1.1 0.7 1.1" dir="-0.5 -0.3 -1" directional="true" diffuse="0.35 0.35 0.40"/>
+    <geom name="floor" type="plane" size="2 2 0.05" material="floor_mat" contype="1" conaffinity="1"/>
+
+    <body name="table" pos="0.53 0 0.18">
+      <geom name="table_top" type="box" size="0.42 0.48 0.18" material="table_mat"
+            contype="1" conaffinity="1" friction="1.0 0.005 0.0001"/>
+    </body>
+
+    <body name="obstacle" pos="0.53 0 0.53">
+      <geom name="obstacle_geom" type="box" size="0.095 0.045 0.17" material="obstacle_mat"
+            contype="1" conaffinity="1" margin="0.015"/>
+    </body>
+
+    <body name="object" pos="0.53 -0.22 0.395">
+      <freejoint name="object_free"/>
+      <!-- The site's 180-degree x rotation matches the downward gripper frame. -->
+      <site name="object_site" pos="0 0 0" quat="0 1 0 0" size="0.004" rgba="1 1 0 0.5"/>
+      <geom name="object_geom" type="box" size="0.027 0.027 0.027" mass="0.10"
+            material="cube_mat" friction="1.5 0.02 0.001" condim="4" margin="0.001"/>
+    </body>
+
+    <body name="goal" pos="0.53 0.22 0.364">
+      <geom name="goal_geom" type="cylinder" size="0.055 0.003" material="goal_mat"
+            contype="0" conaffinity="0"/>
+    </body>
+
+    <camera name="overview" pos="1.38 -1.25 1.12" xyaxes="0.68 0.73 0 -0.39 0.36 0.85" fovy="43"/>
+    <camera name="side" pos="1.25 0 0.74" xyaxes="0 1 0 -0.35 0 0.94" fovy="42"/>
+  </worldbody>
+
+  <!-- Activated only after physical finger closure, disabled before release. -->
+  <equality>
+    <weld name="grasp_weld" site1="grasp_site" site2="object_site" active="false"
+          solref="0.008 1" solimp="0.95 0.99 0.001"/>
+  </equality>
+</mujoco>
+
