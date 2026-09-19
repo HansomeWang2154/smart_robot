@@ -53,6 +53,10 @@ class PandaPickPlace:
             geom for geom in range(self.model.ngeom)
             if int(self.model.geom_bodyid[geom]) in self.robot_bodies
         }
+        self.object_geoms = {
+            geom for geom in range(self.model.ngeom)
+            if int(self.model.geom_bodyid[geom]) == self.object_body
+        }
         self.table_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "table_top")
         self.stats = CollisionStats()
         self._configure_torque_actuators()
@@ -89,6 +93,15 @@ class PandaPickPlace:
         data = self.data if data is None else data
         return data.xpos[self.object_body].copy()
 
+    def randomize_object(self, seed: int) -> np.ndarray:
+        """Randomize the cup on the reachable pick side of the table."""
+        rng = np.random.default_rng(seed)
+        self.data.qpos[self.object_qpos_adr] = rng.uniform(0.43, 0.63)
+        self.data.qpos[self.object_qpos_adr + 1] = rng.uniform(-0.31, -0.17)
+        self.data.qvel[:] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+        return self.object_position()
+
     def _geom_name(self, geom_id: int) -> str:
         return mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or f"geom_{geom_id}"
 
@@ -110,11 +123,23 @@ class PandaPickPlace:
             # report them as physical collisions during execution.
             if penetration_only and float(contact.dist) >= 0.0:
                 continue
-            if allow_object and (g1 == self.object_geom or g2 == self.object_geom):
+            if allow_object and (g1 in self.object_geoms or g2 in self.object_geoms):
                 continue
             # The fixed base touching the floor is benign; Menagerie exclusions
             # already handle adjacent-link contacts.
             names = {self._geom_name(g1), self._geom_name(g2)}
+            body_names = {
+                mujoco.mj_id2name(
+                    self.model,
+                    mujoco.mjtObj.mjOBJ_BODY,
+                    int(self.model.geom_bodyid[geom]),
+                )
+                for geom in (g1, g2)
+            }
+            # The two fingertips are intentionally allowed to meet after a
+            # close command when the perceived grasp is slightly off-center.
+            if body_names <= {"left_finger", "right_finger"}:
+                continue
             if "floor" in names and any("link0" in n for n in names):
                 continue
             result.append(tuple(sorted(names)))
