@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from classic_pick_place.planning import RRTConnect, smooth_joint_path
+from classic_pick_place.perception import RgbdCupDetector
 from classic_pick_place.simulation import PandaPickPlace
 
 
@@ -25,6 +26,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=544)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs")
+    parser.add_argument(
+        "--fixed-object",
+        action="store_true",
+        help="Keep the XML cup pose instead of randomizing it from the seed",
+    )
     return parser.parse_args()
 
 
@@ -48,19 +54,31 @@ def main() -> int:
         )
 
     sim = PandaPickPlace(xml)
+    if not args.fixed_object:
+        sim.randomize_object(args.seed)
+
+    detector = RgbdCupDetector(sim.model)
+    try:
+        detection = detector.detect(sim.data, output_dir=args.output_dir)
+    finally:
+        detector.close()
+
     initial_ee, target_rotation = sim.kin.pose(sim.data)
-    object_position = sim.object_position()
+    true_object_position = sim.object_position()
+    object_position = detection.position_world
     goal_position = np.array([0.53, 0.22, object_position[2]])
 
     targets = {
-        "pregrasp": object_position + np.array([0.0, 0.0, 0.16]),
-        "grasp": object_position + np.array([0.0, 0.0, 0.010]),
+        "pregrasp": object_position + np.array([0.0, 0.0, 0.18]),
+        "grasp": object_position + np.array([0.0, 0.0, 0.035]),
         # A vertical tool orientation constrains the Panda workspace. 0.245 m
         # is reachable on both sides but lower than the obstacle top, forcing
         # the configuration-space planner to find a genuine route around it.
-        "lift": object_position + np.array([0.0, 0.0, 0.245]),
-        "preplace": goal_position + np.array([0.0, 0.0, 0.245]),
-        "place": goal_position + np.array([0.0, 0.0, 0.012]),
+        # A lower initial lift stays reachable across the randomized pick
+        # region; the payload planner then raises toward the fixed shelf side.
+        "lift": object_position + np.array([0.0, 0.0, 0.20]),
+        "preplace": goal_position + np.array([0.0, 0.0, 0.23]),
+        "place": goal_position + np.array([0.0, 0.0, 0.035]),
         "retreat": goal_position + np.array([0.0, 0.0, 0.22]),
     }
 
@@ -124,7 +142,7 @@ def main() -> int:
             elif phase_name == "open":
                 sim.set_grasp_constraint(False)
             min_duration = 1.0 if phase_name in {"close", "open"} else 0.5
-            max_speed = 0.38 if phase_name == "transfer" else 0.48
+            max_speed = 0.25 if phase_name == "transfer" else 0.42
             q_ref, dq_ref = smooth_joint_path(
                 waypoints, sim.dt, max_speed=max_speed, minimum_duration=min_duration
             )
@@ -164,6 +182,15 @@ def main() -> int:
         "success": bool(success),
         "final_object_position": final_object.tolist(),
         "goal_position": goal_position.tolist(),
+        "perception": {
+            "source": "fixed_overhead_rgbd_camera",
+            "estimated_object_position": object_position.tolist(),
+            "true_object_position_evaluation_only": true_object_position.tolist(),
+            "position_error_m": float(np.linalg.norm(object_position - true_object_position)),
+            "pixel_uv": list(detection.pixel_uv),
+            "confidence": detection.confidence,
+            "visible_pixels": detection.visible_pixels,
+        },
         "placement_xy_error_m": xy_error,
         "joint_tracking_rmse_rad": float(np.sqrt(np.mean(q_error**2))),
         "max_joint_tracking_error_rad": float(np.max(np.abs(q_error))),
