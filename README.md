@@ -58,7 +58,9 @@ retained only to report perception error. The final seed-7 artifact reports:
 | object displacement when lock is enabled | 0.11 µm |
 | placement XY error | 12.89 mm |
 | physical forbidden contacts | 0 |
-| joint tracking RMSE | 0.0228 rad |
+| cup/handle–obstacle collision steps | 0 |
+| minimum cup/handle–obstacle signed distance | 37.09 mm |
+| joint tracking RMSE | 0.0203 rad |
 
 `safety_margin_contact_count` is intentionally reported separately: it counts
 MuJoCo contacts generated inside the positive 15 mm planning margin, before
@@ -74,10 +76,14 @@ python scripts/run_demo.py --seed 7
 ## Method
 
 The arm path is planned in configuration space. Every candidate edge is
-interpolated and checked through MuJoCo's collision pipeline. During object
-transfer, the carried cube is approximated by an inflated payload sphere so
-the planner also keeps the payload clear of the obstacle. The low-level
-controller applies
+interpolated and checked through MuJoCo's collision pipeline. After the real
+finger closure and lift, the transfer path is planned online using the
+measured hand-to-cup transform. At every candidate configuration, the complete
+physical cup body and handle are moved with the hand and checked with
+`mj_geomDistance`. The planner requires 25 mm nominal obstacle clearance and
+10 mm table clearance; execution-time signed distance is recorded separately
+so tracking error cannot silently turn a safe reference path into a payload
+collision. The low-level controller applies
 
 ```text
 tau = M(q) [Kp (q_ref - q) + Kd (dq_ref - dq)] + h(q, dq),
