@@ -22,7 +22,8 @@
     <material name="floor_mat" texture="floor_tex" texuniform="true" texrepeat="4 4" reflectance="0.08"/>
     <material name="table_mat" rgba="0.42 0.28 0.16 1" roughness="0.8"/>
     <material name="obstacle_mat" rgba="0.82 0.20 0.16 1" roughness="0.5"/>
-    <material name="cube_mat" rgba="0.10 0.48 0.95 1" roughness="0.35"/>
+    <material name="cup_mat" rgba="0.03 0.16 0.95 1" roughness="0.35" emission="0.18"/>
+    <material name="cup_dark_mat" rgba="0.015 0.025 0.05 1" roughness="0.6"/>
     <material name="goal_mat" rgba="0.10 0.90 0.35 0.35"/>
   </asset>
 
@@ -41,12 +42,17 @@
             contype="1" conaffinity="1" margin="0.015"/>
     </body>
 
-    <body name="object" pos="0.53 -0.22 0.395">
+    <body name="object" pos="0.53 -0.22 0.415">
       <freejoint name="object_free"/>
-      <!-- The site's 180-degree x rotation matches the downward gripper frame. -->
-      <site name="object_site" pos="0 0 0" quat="0 1 0 0" size="0.004" rgba="1 1 0 0.5"/>
-      <geom name="object_geom" type="box" size="0.027 0.027 0.027" mass="0.10"
-            material="cube_mat" friction="1.5 0.02 0.001" condim="4" margin="0.001"/>
+      <!-- A primitive cup proxy: the blue cylinder is physical and the dark
+           inset plus handle are visual. The grasp site lies near the rim. -->
+      <site name="object_site" pos="0 0 0.035" quat="0 1 0 0" size="0.004" rgba="1 1 0 0.5"/>
+      <geom name="object_geom" type="cylinder" size="0.035 0.055" mass="0.12"
+            material="cup_mat" friction="1.5 0.02 0.001" condim="4" margin="0.001"/>
+      <geom name="cup_inner" type="cylinder" size="0.027 0.003" pos="0 0 0.053"
+            material="cup_dark_mat" contype="0" conaffinity="0" mass="0"/>
+      <geom name="cup_handle" type="capsule" fromto="0.035 0 0.025 0.068 0 0.025"
+            size="0.010" material="cup_dark_mat" contype="0" conaffinity="0" mass="0"/>
     </body>
 
     <body name="goal" pos="0.53 0.22 0.364">
@@ -56,6 +62,8 @@
 
     <camera name="overview" pos="1.38 -1.25 1.12" xyaxes="0.68 0.73 0 -0.39 0.36 0.85" fovy="43"/>
     <camera name="side" pos="1.25 0 0.74" xyaxes="0 1 0 -0.35 0 0.94" fovy="42"/>
+    <!-- Calibrated fixed RGB-D camera. Its optical axis points vertically down. -->
+    <camera name="perception" pos="0.53 0 1.45" xyaxes="1 0 0 0 1 0" fovy="52"/>
   </worldbody>
 
   <!-- Activated only after physical finger closure, disabled before release. -->
