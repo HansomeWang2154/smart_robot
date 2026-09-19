@@ -269,6 +269,7 @@ class PandaPickPlace:
         self,
         *,
         payload: bool = False,
+        allow_object_contact: bool = False,
         payload_obstacle_clearance: float = 0.025,
         payload_table_clearance: float = 0.010,
     ):
@@ -317,7 +318,9 @@ class PandaPickPlace:
                     self.object_qpos_adr + 3 : self.object_qpos_adr + 7
                 ] = object_quaternion
                 mujoco.mj_forward(self.model, scratch)
-            if self.forbidden_contacts(scratch, allow_object=payload):
+            if self.forbidden_contacts(
+                scratch, allow_object=(payload or allow_object_contact)
+            ):
                 return False
             if payload:
                 obstacle_distance = min(
