@@ -21,7 +21,10 @@ class CollisionStats:
     safety_margin_contacts: int = 0
     minimum_robot_obstacle_signed_distance: float = np.inf
     minimum_obstacle_clearance: float = np.inf
+    payload_obstacle_collision_steps: int = 0
+    minimum_payload_obstacle_signed_distance: float = np.inf
     contact_pairs: set[tuple[str, str]] = field(default_factory=set)
+    payload_contact_pairs: set[tuple[str, str]] = field(default_factory=set)
 
 
 class PandaPickPlace:
@@ -62,6 +65,13 @@ class PandaPickPlace:
         self.object_geoms = {
             geom for geom in range(self.model.ngeom)
             if int(self.model.geom_bodyid[geom]) == self.object_body
+        }
+        # Ignore purely visual cup geometry, but include every physical part
+        # (the body and handle) when checking a carried payload.
+        self.payload_collision_geoms = {
+            geom for geom in self.object_geoms
+            if int(self.model.geom_contype[geom]) != 0
+            or int(self.model.geom_conaffinity[geom]) != 0
         }
         self.left_finger_body = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "left_finger"
@@ -242,13 +252,46 @@ class PandaPickPlace:
             result.append(tuple(sorted(names)))
         return result
 
-    def collision_checker(self, *, payload: bool = False):
+    def _geom_signed_distance(
+        self,
+        data: mujoco.MjData,
+        geom1: int,
+        geom2: int,
+    ) -> float:
+        from_to = np.empty(6)
+        return float(
+            mujoco.mj_geomDistance(
+                self.model, data, geom1, geom2, 10.0, from_to
+            )
+        )
+
+    def collision_checker(
+        self,
+        *,
+        payload: bool = False,
+        payload_obstacle_clearance: float = 0.025,
+        payload_table_clearance: float = 0.010,
+    ):
         scratch = mujoco.MjData(self.model)
         object_qpos = self.data.qpos[self.object_qpos_adr : self.object_qpos_adr + 7].copy()
-        obstacle_center = self.model.geom_pos[self.obstacle_geom].copy()
-        obstacle_body = int(self.model.geom_bodyid[self.obstacle_geom])
-        obstacle_center = self.model.body_pos[obstacle_body] + obstacle_center
-        obstacle_half = self.model.geom_size[self.obstacle_geom].copy()
+        payload_position_in_grasp = None
+        payload_rotation_in_grasp = None
+        if payload:
+            if not bool(self.data.eq_active[self.grasp_equality]):
+                raise RuntimeError(
+                    "Payload collision checking must be created after the cup is grasped."
+                )
+            mujoco.mj_forward(self.model, self.data)
+            grasp_position = self.data.site_xpos[self.grasp_site].copy()
+            grasp_rotation = self.data.site_xmat[self.grasp_site].reshape(3, 3).copy()
+            object_position = self.data.xpos[self.object_body].copy()
+            object_rotation = self.data.xmat[self.object_body].reshape(3, 3).copy()
+            # Preserve the measured hand-to-cup transform rather than assuming
+            # that the cup is centred on the end effector.
+            payload_position_in_grasp = grasp_rotation.T @ (
+                object_position - grasp_position
+            )
+            payload_rotation_in_grasp = grasp_rotation.T @ object_rotation
 
         def is_free(q: np.ndarray) -> bool:
             scratch.qpos[:] = self.data.qpos
@@ -256,17 +299,38 @@ class PandaPickPlace:
             scratch.qpos[self.arm_qpos] = q
             scratch.qvel[:] = 0.0
             mujoco.mj_forward(self.model, scratch)
+            if payload:
+                assert payload_position_in_grasp is not None
+                assert payload_rotation_in_grasp is not None
+                grasp_position = scratch.site_xpos[self.grasp_site].copy()
+                grasp_rotation = scratch.site_xmat[self.grasp_site].reshape(3, 3).copy()
+                object_position = (
+                    grasp_position + grasp_rotation @ payload_position_in_grasp
+                )
+                object_rotation = grasp_rotation @ payload_rotation_in_grasp
+                object_quaternion = np.empty(4)
+                mujoco.mju_mat2Quat(object_quaternion, object_rotation.ravel())
+                scratch.qpos[
+                    self.object_qpos_adr : self.object_qpos_adr + 3
+                ] = object_position
+                scratch.qpos[
+                    self.object_qpos_adr + 3 : self.object_qpos_adr + 7
+                ] = object_quaternion
+                mujoco.mj_forward(self.model, scratch)
             if self.forbidden_contacts(scratch, allow_object=payload):
                 return False
             if payload:
-                point, _ = self.kin.pose(scratch)
-                closest = np.maximum(np.abs(point - obstacle_center) - obstacle_half, 0.0)
-                # Conservative swept-volume proxy for the grasped cube. The
-                # 85 mm radius absorbs grasp offset and closed-loop tracking
-                # error, not just the cube's geometric half-width.
-                if np.linalg.norm(closest) < 0.085:
+                obstacle_distance = min(
+                    self._geom_signed_distance(scratch, geom, self.obstacle_geom)
+                    for geom in self.payload_collision_geoms
+                )
+                if obstacle_distance < payload_obstacle_clearance:
                     return False
-                if point[2] < 0.395:
+                table_distance = min(
+                    self._geom_signed_distance(scratch, geom, self.table_geom)
+                    for geom in self.payload_collision_geoms
+                )
+                if table_distance < payload_table_clearance:
                     return False
             return True
 
@@ -319,4 +383,24 @@ class PandaPickPlace:
         self.stats.minimum_obstacle_clearance = min(
             self.stats.minimum_obstacle_clearance, float(np.linalg.norm(closest))
         )
+
+        payload_distances = {
+            geom: self._geom_signed_distance(self.data, geom, self.obstacle_geom)
+            for geom in self.payload_collision_geoms
+        }
+        minimum_payload_distance = min(payload_distances.values())
+        self.stats.minimum_payload_obstacle_signed_distance = min(
+            self.stats.minimum_payload_obstacle_signed_distance,
+            minimum_payload_distance,
+        )
+        colliding_payload_geoms = [
+            geom for geom, distance in payload_distances.items() if distance < 0.0
+        ]
+        if colliding_payload_geoms:
+            self.stats.payload_obstacle_collision_steps += 1
+            obstacle_name = self._geom_name(self.obstacle_geom)
+            self.stats.payload_contact_pairs.update(
+                tuple(sorted((self._geom_name(geom), obstacle_name)))
+                for geom in colliding_payload_geoms
+            )
 
