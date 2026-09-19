@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from classic_pick_place.perception import CupDetection, RgbdCupDetector
 from classic_pick_place.planning import RRTConnect, smooth_joint_path
 from classic_pick_place.simulation import PandaPickPlace
+from classic_pick_place.vla_dataset import RawVlaEpisodeRecorder
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +31,17 @@ def parse_args() -> argparse.Namespace:
         "--fixed-object",
         action="store_true",
         help="Keep the XML cup pose instead of randomizing it from the seed",
+    )
+    parser.add_argument(
+        "--record-dataset-root",
+        type=Path,
+        default=None,
+        help="Save an aligned raw VLA episode for later LeRobot conversion",
+    )
+    parser.add_argument("--dataset-fps", type=int, default=20)
+    parser.add_argument(
+        "--task",
+        default="pick up the blue cup and place it on the green target",
     )
     return parser.parse_args()
 
@@ -58,6 +70,19 @@ def main() -> int:
 
     initial_ee, target_rotation = sim.kin.pose(sim.data)
     initial_object_truth = sim.object_position()
+    recorder = (
+        RawVlaEpisodeRecorder(
+            sim.model,
+            args.record_dataset_root,
+            fps=args.dataset_fps,
+            task=args.task,
+            seed=args.seed,
+            source="scripted_expert",
+        )
+        if args.record_dataset_root is not None
+        else None
+    )
+    record_stride = max(1, int(round(1.0 / (args.dataset_fps * sim.dt))))
 
     fixed_detector = RgbdCupDetector(sim.model, camera_name="perception")
     try:
@@ -123,6 +148,7 @@ def main() -> int:
     goal_position = np.array([0.53, 0.22, object_position[2]])
     grasp_contacts_at_lock = (False, False)
     object_jump_at_lock = np.inf
+    run_completed = False
 
     def execute_phase(
         phase_name: str,
@@ -166,6 +192,18 @@ def main() -> int:
             log["ee"].append(ee)
             log["object"].append(sim.object_position())
             log["phase"].append(phase_name)
+            if recorder is not None and global_step % record_stride == 0:
+                recorder.add_frame(
+                    sim.data,
+                    arm_qpos=sim.arm_qpos,
+                    arm_dofs=sim.arm_dofs,
+                    finger_qpos=sim.finger_qpos,
+                    ee_position=ee,
+                    ee_rotation=sim.kin.pose(sim.data)[1],
+                    q_target=qr,
+                    gripper_open=gripper_open,
+                    phase=phase_name,
+                )
             if renderer is not None and global_step % render_stride == 0:
                 renderer.update_scene(sim.data, camera="overview")
                 assert writer is not None
@@ -325,11 +363,14 @@ def main() -> int:
             gripper_open=True,
             allow_object_contact=False,
         )
+        run_completed = True
     finally:
         if writer is not None:
             writer.close()
         if renderer is not None:
             renderer.close()
+        if recorder is not None and not run_completed:
+            recorder.discard()
 
     assert wrist_detection is not None and wrist_truth is not None
     arrays = {key: np.asarray(value) for key, value in log.items() if key != "phase"}
@@ -395,6 +436,23 @@ def main() -> int:
             for name, result in plans.items()
         },
     }
+    if recorder is not None:
+        episode = recorder.save(
+            success=bool(success),
+            metrics={
+                "placement_xy_error_m": xy_error,
+                "forbidden_contact_count": sim.stats.forbidden_contacts,
+                "payload_obstacle_collision_steps": (
+                    sim.stats.payload_obstacle_collision_steps
+                ),
+            },
+        )
+        metrics["dataset_episode"] = {
+            "path": str(episode.path),
+            "frames": episode.frames,
+            "duration_s": episode.duration_s,
+            "success": episode.success,
+        }
     (args.output_dir / "metrics.json").write_text(
         json.dumps(metrics, indent=2),
         encoding="utf-8",
