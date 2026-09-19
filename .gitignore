@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 outputs/
+datasets/
 third_party/mujoco_menagerie/
 third_party/franka_emika_panda/
 
