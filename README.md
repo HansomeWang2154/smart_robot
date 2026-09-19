@@ -112,3 +112,39 @@ category-level cup detector. `RgbdCupDetector` is the replacement point for
 YOLO-World/Grounding DINO plus depth, while the planner and controller remain
 unchanged.
 
+## Teleoperation and VLA data
+
+Install the optional gamepad dependency and start Cartesian teleoperation:
+
+```bash
+python -m pip install -e '.[teleop]'
+python scripts/teleop_collect.py --device gamepad --episodes 10
+```
+
+The input layer also supports `--device keyboard`. Motion uses a deadman
+button, DLS IK, joint-limit clipping, MuJoCo collision rejection, and the same
+payload-aware cup/handle checker as the autonomous demo. Episodes can be saved
+or discarded from the controller.
+
+Every accepted episode synchronizes two RGB views, robot state, velocity,
+end-effector pose, the actual commanded joint target, gripper command,
+timestamp, language task, and success/collision metadata at 20 Hz. Convert the
+auditable raw format to LeRobot for openpi/π0.5:
+
+```bash
+python scripts/inspect_raw_dataset.py datasets/raw
+python -m pip install -e '.[dataset]'
+python scripts/convert_to_lerobot.py \
+  --raw-dir datasets/raw \
+  --repo-id <hf-user>/panda-cup-mujoco
+```
+
+See [docs/VLA_DATA_COLLECTION.md](docs/VLA_DATA_COLLECTION.md) for controller
+mapping, schema, QA, train/validation splitting, and the recommended
+scripted-expert → human teleoperation → HIL/DAgger collection progression.
+
+The cloud smoke dataset contains four successful randomized episodes: 3,309
+aligned steps and 6,618 RGB frames. It reloads with LeRobot 0.6.1 as four
+episodes at 20 Hz with two `(3, 240, 320)` observations, 8-D state and 8-D
+absolute joint-position/gripper actions.
+
